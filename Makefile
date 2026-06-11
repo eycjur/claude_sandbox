@@ -9,4 +9,4 @@ down:
 	docker compose down
 
 exec:
-	docker compose exec sandbox zsh
+	docker compose exec sandbox claude --dangerously-skip-permissions
