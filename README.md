@@ -2,6 +2,6 @@
 
 ## Quick Start
 ```bash
-docker compose up -d
-docker compose exec sandbox zsh
+make up
+make exec
 ```
