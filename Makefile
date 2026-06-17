@@ -3,7 +3,7 @@
 
 DOCKER_HUB_USERNAME=eycjur
 IMAGE_NAME=claude-sandbox
-CONTAINER_NAME=$(shell basename $(CURDIR))
+CONTAINER_NAME=$(subst _,-,$(shell basename $(CURDIR)))
 
 build:
 	docker build \
