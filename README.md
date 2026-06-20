@@ -46,3 +46,11 @@ claude --dangerously-skip-permissions
 | `make exec` | 実行中のコンテナに zsh で接続する |
 
 `make exec` で接続したあと、作業ディレクトリへ移動する場合は `cd $WORKSPACE_DIR` を実行してください。
+
+### ポートの公開
+
+コンテナ内で起動したサーバーなどをホストからアクセスできるようにするには、`sbx ports` でポートを公開します。
+
+```bash
+make ports PORT=<ポート番号>
+```
