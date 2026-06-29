@@ -1,53 +1,49 @@
-# my-docker-sandbox
+# Claude Sandbox
 
-[Docker Sandbox](https://docs.docker.com/ai/sandboxes/) 上で Claude Code を動かすための開発環境です。  
-`docker/sandbox-templates:claude-code` をベースに zsh と dotfiles を追加したカスタムテンプレートをビルドし、`sbx` CLI でコンテナを起動します。
+[Apple container](https://github.com/apple/container) 上で Claude Code を動かす開発環境です。  
+`ubuntu:26.04` ベースのカスタムイメージを CI で arm64 ビルドし、Docker Hub から pull して Mac 上で使います。
+
+## 前提
+
+- Apple Silicon Mac
+- macOS 26 以降
 
 ## セットアップ
-
-### 1. Sandbox CLI のインストール
 
 ```bash
 make install
 ```
 
-### 2. テンプレートイメージのビルド
-
-> [!WARNING]
-> Makefile に `DOCKER_HUB_USERNAME` をハードコードしています。自分の環境で使う場合は、Makefile 先頭を自分の Docker Hub ユーザー名に書き換えてください。
-
-```bash
-make build
-```
-
-Docker Hub（`<DOCKER_HUB_USERNAME>/claude-sandbox`）へ push されます。
+`container` CLI のインストール（未導入時）と `container system start --enable-kernel-install` を実行します。
 
 ## 使い方
 
-### サンドボックスの起動
-
 ```bash
-make up
+make run
 ```
 
-コンテナが未存在の場合は作成し、zsh で接続します。停止中の場合も同じコマンドで再接続できます。  
-接続後、コンテナ内で Claude Code を実行します。
+初回はイメージを pull してコンテナを作成し、zsh（login shell）に入ります。2回目以降は起動してから接続します。
+
+コンテナ内で Claude Code を起動する例:
 
 ```bash
 claude --dangerously-skip-permissions
 ```
 
-### その他のコマンド
-
 | コマンド | 説明 |
 |----------|------|
+| `make run` | コンテナを作成/起動して zsh に入る |
 | `make stop` | コンテナを停止する |
-| `make down` | コンテナを削除する |
+| `make rm` | コンテナを削除する |
+| `make help` | コマンド一覧を表示する |
 
-### ポートの公開
+## イメージのビルド
 
-コンテナ内で起動したサーバーなどをホストからアクセスできるようにするには、`sbx ports` でポートを公開します。
+CI（`ubuntu-26.04-arm`）で Docker Hub へ push:
 
 ```bash
-make port PORT=<ポート番号>
+make build
 ```
+
+> [!WARNING]
+> Makefile の `DOCKER_HUB_USERNAME` は `eycjur` 固定です。自分のイメージを使う場合は書き換えてください。
