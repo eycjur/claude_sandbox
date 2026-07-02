@@ -38,6 +38,7 @@ run: install ## コンテナを作成/起動して zsh に入る
 			"$(DOCKER_HUB_USERNAME)/$(IMAGE_NAME):latest" sleep infinity; \
 	fi
 	container exec -it -u agent -w "$(WORKSPACE)" "$(CONTAINER_NAME)" zsh -l
+	# メモリ制限上限は、--memory 4g のように指定する
 
 stop: ## コンテナを停止
 	container stop "$(CONTAINER_NAME)"
@@ -52,6 +53,6 @@ update-makefile: ## 最新の Makefile を取得して更新
 	curl -fsSL -o Makefile $(UPSTREAM_MAKEFILE)
 
 help: ## このヘルプを表示
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -Eh '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'

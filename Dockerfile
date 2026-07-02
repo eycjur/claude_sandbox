@@ -8,6 +8,7 @@ RUN apt-get update \
 		ca-certificates \
 		curl \
 		git \
+		less \
 		make \
 		python-is-python3 \
 		python3 \
@@ -22,7 +23,7 @@ RUN apt-get update \
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /uvx /bin/
 
-ENV PATH=/home/agent/.local/bin:/usr/bin:/bin
+ENV PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /home/agent
 
