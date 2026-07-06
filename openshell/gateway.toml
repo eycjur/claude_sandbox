@@ -1,10 +1,8 @@
-# Copy to ~/.config/openshell/gateway.toml and restart the gateway:
+# OpenShell gateway — Docker compute driver (NVIDIA Container Toolkit + CDI)
+#
+# Deploy and restart:
 #   make gateway-config
 #   systemctl --user restart openshell-gateway
-#
-# MicroVM (vm) driver is opt-in and never auto-detected.
-# GPU passthrough on Linux uses QEMU + VFIO and requires IOMMU plus root
-# privileges for GPU bind/unbind on the gateway host.
 
 [openshell]
 version = 1
@@ -12,16 +10,13 @@ version = 1
 [openshell.gateway]
 bind_address = "127.0.0.1:17670"
 log_level = "info"
-compute_drivers = ["vm"]
+compute_drivers = ["docker"]
 
-[openshell.drivers.vm]
-state_dir = "/var/lib/openshell/vm"
-# state_dir = "~/.local/state/openshell/vm"
-driver_dir = "/usr/libexec/openshell"
+[openshell.drivers.docker]
 default_image = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
-bootstrap_image = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
-grpc_endpoint = "https://host.containers.internal:17670"
-vcpus = 4
-mem_mib = 8192
-overlay_disk_mib = 8192
-krun_log_level = 1
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor:latest"
+image_pull_policy = "IfNotPresent"
+sandbox_namespace = "openshell"
+grpc_endpoint = "https://host.openshell.internal:17670"
+enable_bind_mounts = true
+sandbox_pids_limit = 2048
