@@ -16,9 +16,10 @@ compute_drivers = ["vm"]
 
 [openshell.drivers.vm]
 state_dir = "/var/lib/openshell/vm"
-driver_dir = "/usr/local/libexec/openshell"
-default_image = "ghcr.io/nvidia/openshell/sandbox:latest"
-bootstrap_image = "ghcr.io/nvidia/openshell/sandbox:latest"
+# state_dir = "~/.local/state/openshell/vm"
+driver_dir = "/usr/libexec/openshell"
+default_image = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
+bootstrap_image = "ghcr.io/nvidia/openshell-community/sandboxes/base:latest"
 grpc_endpoint = "https://host.containers.internal:17670"
 vcpus = 4
 mem_mib = 8192

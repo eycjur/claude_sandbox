@@ -23,15 +23,18 @@ RUN apt-get update \
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /uvx /bin/
 
-RUN install -d -m 1777 /sandbox
+# OpenShell requires a non-root sandbox user in container images.
+RUN groupadd -g 1000660000 sandbox \
+	&& useradd -m -u 1000660000 -g sandbox sandbox
+
+RUN install -d -o sandbox -g sandbox /sandbox
 WORKDIR /sandbox
 
 ENV PATH=/sandbox/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV HOME=/sandbox
 
-# OpenShell VM driver injects sandbox user at runtime (default UID 10001).
 RUN curl -fsSL https://claude.ai/install.sh | bash \
 	&& curl -sSL https://raw.githubusercontent.com/eycjur/dotfiles/main/remote-install.sh | zsh \
-	&& chown -R 10001:10001 /sandbox
+	&& chown -R sandbox:sandbox /sandbox
 
 CMD ["zsh", "-l"]
