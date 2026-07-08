@@ -34,11 +34,11 @@ run: install ## コンテナを作成/起動して zsh に入る
 		container run -d --init --name "$(CONTAINER_NAME)" --platform linux/arm64 \
 			-v "$$(pwd):$(WORKSPACE)" \
 			-w "$(WORKSPACE)" \
+			--memory 4g \
 			--user agent \
 			"$(DOCKER_HUB_USERNAME)/$(IMAGE_NAME):latest" sleep infinity; \
 	fi
 	container exec -it -u agent -w "$(WORKSPACE)" "$(CONTAINER_NAME)" zsh -l
-	# メモリ制限上限は、--memory 4g のように指定する
 
 stop: ## コンテナを停止
 	container stop "$(CONTAINER_NAME)"
