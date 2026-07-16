@@ -2,7 +2,7 @@
 
 [apple/container](https://github.com/apple/container) 上で AI コーディングエージェント（Claude Code など）を使い捨てサンドボックスとして起動する CLI です。
 
-ディレクトリごとに 1 つのサンドボックスを持ちます。認証情報（`~/.claude/.credentials.json`）だけを、サンドボックス作成時にホストの `~/.agentsb/home` からコンテナへコピーし（`container cp`）、セッション終了時にコピーバックしてログイン状態を共有します。それ以外の状態（`~/.claude.json` のオンボーディング状態や設定を含む）はサンドボックス（コンテナ）ごとに独立しているため、複数のサンドボックスを並行して使ってもエージェント同士は衝突しません。サンドボックスは `agentsb rm` で削除するまで維持されます。
+ディレクトリごとに 1 つのサンドボックスを持ちます。認証情報（`~/.claude/.credentials.json`、`~/.claude.json`）を、サンドボックス作成時にホストの `~/.agentsb/home` からコンテナへコピーします（`container cp`）。書き戻しはセッション終了時に行い、`.credentials.json`（OAuth トークン）は無条件で上書き、`.claude.json`（オンボーディング状態や設定）はコンテナ側で更新された場合だけホストへ反映します（ホスト側の手動編集を古い内容で上書きしないため）。サンドボックスは `agentsb rm` で削除するまで維持されます。
 
 ## 前提
 
@@ -49,14 +49,14 @@ claude --dangerously-skip-permissions
 |------|------|
 | `~/.config/agentsb/config.toml` | グローバル設定（任意。無ければデフォルトで動作。`$XDG_CONFIG_HOME` があればそちら優先） |
 | `~/.agentsb/build/` | イメージビルド用の作業ディレクトリ。ビルド時に Containerfile がここへ書き出される |
-| `~/.agentsb/home/` | 認証情報（`.claude/.credentials.json`）を永続化し、サンドボックス作成時・セッション終了時に `container cp` でコンテナとやり取りする |
+| `~/.agentsb/home/` | 認証情報（`.claude/.credentials.json`、`.claude.json`）を永続化し、サンドボックス作成時・セッション終了時に `container cp` でコンテナとやり取りする |
 | `~/.agentsb/logs/agentsb.log` | 動作検証用ログ（設定の有無、container CLI 呼び出し、dotfiles の有効/無効など） |
 
 データ側（`~/.agentsb/`）は初回の `agentsb run` で自動生成されます。旧パス `~/.agentsb/config.toml` もまだ読めますが、新規は `~/.config/agentsb/config.toml` を使ってください。
 
 ログは常に `~/.agentsb/logs/agentsb.log` へ追記されます（2 MiB 超で `agentsb.log.1` へローテート）。ターミナルにも同じ行を出したいときは `-v` / `--verbose` を付けてください。dotfiles の clone/install の途中経過はコンテナ内の stderr（セッション画面）にも出ます。
 
-イメージは Ubuntu 26.04 ベースで、Claude Code（npm グローバル）、Node.js、Python + uv、git、ripgrep、zsh、yazi（`git.yazi` プラグイン込み）などを含みます。`agent` ユーザーはパスワードなしで `sudo` を使えるため、足りないツールはコンテナ内で追加インストールできます（永続化したい場合は Containerfile へ）。
+イメージは Ubuntu 26.04 ベースで、Claude Code（npm グローバル）、hunkdiff（npm グローバル）、Node.js、Python + uv、git、ripgrep、zsh、yazi（`git.yazi` プラグイン込み）などを含みます。`agent` ユーザーはパスワードなしで `sudo` を使えるため、足りないツールはコンテナ内で追加インストールできます（永続化したい場合は Containerfile へ）。
 
 イメージ定義（Containerfile）は agentsb のバイナリに内蔵されており、`~/.agentsb/build/Containerfile` を編集しても次のビルドで上書きされます。定義を変更したい場合はリポジトリの `internal/image/Containerfile` を編集して `make install` で入れ直してください。agentsb の更新で定義が変わると、次回 `run` で自動的にリビルドされ、既存のサンドボックスも新イメージで作り直されます。認証情報は `~/.agentsb/home` に別途永続化されているため保持されますが、それ以外のコンテナ内の状態（dotfiles で管理していない `$HOME` 配下のファイルや `apt install` したものなど）は失われます。dotfiles で管理している内容は再作成時に自動で再適用されます。ビルドコンテキストは `build/` 固定で、認証情報を含む `home/` は含まれません。
 

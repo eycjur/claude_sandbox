@@ -128,7 +128,7 @@ func runRun(_ *cobra.Command, _ []string) error {
 	// `container cp` は稼働中のコンテナにしか使えないため、Start の後に注入する
 	// （詳細は internal/home のコメント）。
 	if created {
-		if err := home.InjectCredentials(runName, credFiles); err != nil {
+		if err := home.InjectCredentials(runName, credFiles, uid, gid); err != nil {
 			return fmt.Errorf("cannot inject credentials: %w", err)
 		}
 	}

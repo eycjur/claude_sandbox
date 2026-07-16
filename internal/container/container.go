@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"agentsb/internal/runlog"
 )
@@ -159,14 +160,46 @@ func pathKey(path string) string {
 
 // CopyToContainer はホストのファイルをコンテナ内へコピーする（`container cp`）。
 // bind mount と違い、稼働中・停止中どちらのコンテナに対しても実行できる。
+// コピーはコンテナ側のゲストエージェント（root）が書き込むため、結果のファイルは
+// root 所有になる。呼び出し側は必要に応じて Chown で agent 所有へ戻すこと。
 func CopyToContainer(name, hostPath, containerPath string) error {
 	_, err := runCLI("cp", hostPath, name+":"+containerPath)
+	return err
+}
+
+// Chown はコンテナ内の path の所有者を uid:gid に変更する。`exec` はイメージの
+// 既定ユーザー（agent）で動くため、root 所有のファイルを chown するには sudo を
+// 経由する（Containerfile で agent にパスワードなし sudo を付与済み）。
+func Chown(name, path string, uid, gid int) error {
+	_, err := runCLI("exec", name, "sudo", "chown", fmt.Sprintf("%d:%d", uid, gid), path)
 	return err
 }
 
 // CopyFromContainer はコンテナ内のファイルをホストへコピーする（`container cp`）。
 func CopyFromContainer(name, containerPath, hostPath string) error {
 	_, err := runCLI("cp", name+":"+containerPath, hostPath)
+	return err
+}
+
+// ModTime はコンテナ内のファイルの更新時刻を返す（稼働中のコンテナが対象）。
+func ModTime(name, path string) (time.Time, error) {
+	out, err := runCLI("exec", name, "stat", "-c", "%Y", path)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("stat %s: %w", path, err)
+	}
+	sec, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse mtime of %s: %w", path, err)
+	}
+	return time.Unix(sec, 0), nil
+}
+
+// SetModTime はコンテナ内のファイルの更新時刻を t に設定する。
+// InjectCredentials 直後にホスト側の mtime を写すために使う — こうしないと
+// `container cp` によるコピー自体がコンテナ側の mtime をコピー時刻で更新して
+// しまい、以後の「新しい方だけ書き戻す」判定が常に真になってしまう。
+func SetModTime(name, path string, t time.Time) error {
+	_, err := runCLI("exec", name, "touch", "-d", fmt.Sprintf("@%d", t.Unix()), path)
 	return err
 }
 
