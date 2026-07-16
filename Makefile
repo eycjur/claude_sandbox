@@ -1,5 +1,5 @@
 # Makefile
-.PHONY: help install build run stop rm open update-makefile
+.PHONY: help install build run stop rm kill open update-makefile
 .DEFAULT_GOAL := help
 
 DOCKER_HUB_USERNAME ?= eycjur
@@ -45,6 +45,10 @@ stop: ## コンテナを停止
 
 rm: ## コンテナを削除
 	container rm -f "$(CONTAINER_NAME)" 2>/dev/null || true
+
+kill: ## コンテナを強制終了（ホストからkillする）
+	@echo $$(ps -axo pid,command | grep -E 'containers/$(CONTAINER_NAME)' | grep -v 'grep')
+	@echo 'kill <PID>で強制終了できます'
 
 open: ## コンテナ IP:PORT をブラウザで開く (PORT=$(PORT))
 	@ip=$$(container inspect $(CONTAINER_NAME)|jq -r '.[0].status.networks[0].ipv4Address|split("/")[0]'); open "http://$$ip:$(PORT)"
