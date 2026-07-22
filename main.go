@@ -1,4 +1,4 @@
-// agentsb は apple/container 上で AI コーディングエージェントを
+// agentsb は Docker Sandboxes（sbx）上で AI コーディングエージェントを
 // 使い捨てサンドボックスとして起動する CLI。
 // このファイルにはコマンド定義をまとめてある。複雑なコマンドの実装は
 // run.go に、実処理は internal/ 配下にある。
@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"agentsb/internal/config"
-	"agentsb/internal/container"
 	"agentsb/internal/image"
 	"agentsb/internal/runlog"
+	"agentsb/internal/sandbox"
 
 	"github.com/spf13/cobra"
 )
@@ -27,7 +27,7 @@ func main() {
 func execute() int {
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "mirror diagnostic logs to stderr")
 	pruneCmd.Flags().BoolVarP(&pruneYes, "yes", "y", false, "skip confirmation prompt")
-	rootCmd.AddCommand(runCmd, buildCmd, lsCmd, stopCmd, killCmd, rmCmd, pruneCmd, openCmd)
+	rootCmd.AddCommand(runCmd, buildCmd, lsCmd, stopCmd, rmCmd, pruneCmd, openCmd)
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
 		runlog.SetVerbose(verboseFlag)
 		runlog.Open()
@@ -43,7 +43,7 @@ func execute() int {
 }
 
 // exitCode は、コマンドが Go のエラーなしに完了したときに伝播させる
-// プロセス終了ステータス（例: コンテナ内エージェントの exit code）。
+// プロセス終了ステータス（例: サンドボックス内エージェントの exit code）。
 var exitCode int
 
 // verboseFlag は -v / --verbose。
@@ -52,47 +52,31 @@ var verboseFlag bool
 // rootCmd は agentsb のルートコマンド。
 var rootCmd = &cobra.Command{
 	Use:           "agentsb",
-	Short:         "Run AI coding agents in apple/container sandboxes",
+	Short:         "Run AI coding agents in Docker Sandboxes",
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
 
 // runCmd は agentsb run コマンド。エージェント用サンドボックスを起動する。
-var runCmd = newRunCmd()
-
-var (
-	runCPUs   int
-	runMemory string
-)
-
-// newRunCmd は run コマンドをフラグ込みで組み立てる。フラグ変数の初期化式で
-// runCmd を参照すると初期化循環（フラグ → runCmd → runRun → フラグ）に
-// なるため、コンストラクタで登録する。
-func newRunCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "run [flags]",
-		Aliases: []string{"exec"},
-		Short:   "Enter the sandbox for the current directory (builds, creates and starts it as needed)",
-		Args:    cobra.NoArgs,
-		RunE:    runRun,
-	}
-	cmd.Flags().IntVar(&runCPUs, "cpus", 0, "CPU count (overrides config)")
-	cmd.Flags().StringVar(&runMemory, "memory", "", `memory limit, e.g. "8g" (overrides config)`)
-	return cmd
+var runCmd = &cobra.Command{
+	Use:     "run",
+	Aliases: []string{"exec"},
+	Short:   "Enter the sandbox for the current directory (builds and creates it as needed)",
+	Args:    cobra.NoArgs,
+	RunE:    runRun,
 }
 
-// buildCmd は agentsb build コマンド。イメージを強制リビルドし、
-// 古いイメージを prune する。
+// buildCmd は agentsb build コマンド。テンプレートを強制リビルドして sbx へ
+// ロードし直し、古いテンプレートを prune する。
 var buildCmd = &cobra.Command{
 	Use:   "build",
-	Short: "Force rebuild the sandbox image (picks up base image or tool updates)",
+	Short: "Force rebuild the sandbox template (picks up base image or tool updates)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := container.EnsureRunning(); err != nil {
+		if err := sandbox.CheckCLI(); err != nil {
 			return err
 		}
-		uid, gid := container.HostIDs()
-		tag, err := image.EnsureBuilt(uid, gid, true)
+		tag, err := image.EnsureBuilt(true)
 		if err != nil {
 			return err
 		}
@@ -102,26 +86,35 @@ var buildCmd = &cobra.Command{
 }
 
 // lsCmd は agentsb ls コマンド。agentsb のサンドボックスを一覧する。
+// カラム構成（状態など）は `sbx ls` の出力に任せ、agentsb 管理分だけを
+// フィルタして表示する。
 var lsCmd = &cobra.Command{
 	Use:     "ls",
 	Aliases: []string{"list", "ps"},
 	Short:   "List agentsb sandboxes (including stopped)",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := container.EnsureRunning(); err != nil {
+		if err := sandbox.CheckCLI(); err != nil {
 			return err
 		}
-		containers, err := container.ListAgentsb()
+		out, err := sandbox.ListOutput()
 		if err != nil {
 			return err
 		}
-		if len(containers) == 0 {
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		var rows []string
+		for i, line := range lines {
+			// 先頭行はヘッダーとして残し、以降は agentsb 管理分のみ表示する。
+			if i == 0 || strings.Contains(line, sandbox.NamePrefix) {
+				rows = append(rows, line)
+			}
+		}
+		if len(rows) <= 1 {
 			fmt.Println("no agentsb sandboxes")
 			return nil
 		}
-		for _, c := range containers {
-			short := strings.TrimPrefix(c.Name, "agentsb-")
-			fmt.Printf("%-20s  %-40s  %s\n", short, c.Name, c.State)
+		for _, line := range rows {
+			fmt.Println(line)
 		}
 		return nil
 	},
@@ -132,8 +125,8 @@ var lsCmd = &cobra.Command{
 func targetName(args []string) (string, error) {
 	if len(args) == 1 {
 		name := args[0]
-		if !strings.HasPrefix(name, "agentsb-") {
-			name = "agentsb-" + name
+		if !strings.HasPrefix(name, sandbox.NamePrefix) {
+			name = sandbox.NamePrefix + name
 		}
 		return name, nil
 	}
@@ -141,24 +134,24 @@ func targetName(args []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot get working directory: %w", err)
 	}
-	return container.RunName(cwd), nil
+	return sandbox.RunName(cwd), nil
 }
 
-// stopCmd は agentsb stop コマンド。コンテナを停止する。
-// コンテナと home は残るため、次の run で同じ状態から再開できる。
+// stopCmd は agentsb stop コマンド。サンドボックスを停止する。
+// サンドボックスと home は残るため、次の run で同じ状態から再開できる。
 var stopCmd = &cobra.Command{
 	Use:   "stop [name]",
 	Short: "Stop a running sandbox (state is kept; the next run resumes it; defaults to the current directory's)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := container.EnsureRunning(); err != nil {
+		if err := sandbox.CheckCLI(); err != nil {
 			return err
 		}
 		name, err := targetName(args)
 		if err != nil {
 			return err
 		}
-		if err := container.Stop(name); err != nil {
+		if err := sandbox.Stop(name); err != nil {
 			return fmt.Errorf("stop %s: %w", name, err)
 		}
 		fmt.Printf("stopped %s\n", name)
@@ -166,48 +159,34 @@ var stopCmd = &cobra.Command{
 	},
 }
 
-// killCmd は agentsb kill コマンド。`container stop` が応答しない場合の
-// 最終手段として、OS のプロセスレベルでコンテナを強制終了する
-// （`container` CLI 自体は経由しない）。
-var killCmd = &cobra.Command{
-	Use:   "kill [name]",
-	Short: "Force-kill a sandbox at the OS process level (last resort when `container stop` is unresponsive; defaults to the current directory's)",
-	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		name, err := targetName(args)
-		if err != nil {
-			return err
-		}
-		if err := container.Kill(name); err != nil {
-			return fmt.Errorf("kill %s: %w", name, err)
-		}
-		fmt.Printf("killed %s\n", name)
-		return nil
-	},
-}
-
 // pruneYes は prune の -y/--yes。確認プロンプトをスキップする。
 var pruneYes bool
 
-// pruneCmd は agentsb prune コマンド。agentsb が管理する全コンテナ・全イメージ・
-// 認証情報・ビルド作業ディレクトリを削除するフルリセット。認証情報が消えるため
-// 次回 run では各サンドボックスで再ログインが必要になる。
+// pruneCmd は agentsb prune コマンド。agentsb が管理する全サンドボックス・
+// 全テンプレート・認証情報・ビルド作業ディレクトリを削除するフルリセット。
+// 認証情報が消えるため次回 run では各サンドボックスで再ログインが必要になる。
 var pruneCmd = &cobra.Command{
 	Use:   "prune",
-	Short: "Remove all agentsb sandboxes, images, and stored credentials (full reset)",
+	Short: "Remove all agentsb sandboxes, templates, and stored credentials (full reset)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !pruneYes && !confirmPrune() {
 			fmt.Println("aborted")
 			return nil
 		}
-		if err := container.EnsureRunning(); err != nil {
+		if err := sandbox.CheckCLI(); err != nil {
 			return err
 		}
 
 		var errs []string
-		if err := container.DeleteAllAgentsb(); err != nil {
+		names, err := sandbox.AgentsbNames()
+		if err != nil {
 			errs = append(errs, err.Error())
+		}
+		for _, name := range names {
+			if err := sandbox.Remove(name); err != nil {
+				errs = append(errs, fmt.Sprintf("remove %s: %v", name, err))
+			}
 		}
 		if err := image.DeleteAll(); err != nil {
 			errs = append(errs, err.Error())
@@ -222,29 +201,29 @@ var pruneCmd = &cobra.Command{
 		if len(errs) > 0 {
 			return fmt.Errorf("prune finished with errors: %s", strings.Join(errs, "; "))
 		}
-		fmt.Println("pruned all agentsb sandboxes, images, and credentials")
+		fmt.Println("pruned all agentsb sandboxes, templates, and credentials")
 		return nil
 	},
 }
 
 // confirmPrune は破壊的な操作であることを明示し、標準入力で確認を取る。
 func confirmPrune() bool {
-	fmt.Print("This removes all agentsb sandboxes, images, and stored credentials. Continue? [y/N] ")
+	fmt.Print("This removes all agentsb sandboxes, templates, and stored credentials. Continue? [y/N] ")
 	var reply string
 	fmt.Scanln(&reply)
 	return strings.ToLower(strings.TrimSpace(reply)) == "y"
 }
 
 // openCmd は agentsb open コマンド。カレントディレクトリのサンドボックスの
-// IP を調べ、コンテナ内で動くサーバーをホストのブラウザで開く。
-// apple/container はコンテナごとに macOS ホストから直接届く IP を割り当てる
-// ため、ポート公開の設定なしで http://<IP>:<port>/ にアクセスできる。
+// ポートをホストへ公開し、サンドボックス内で動くサーバーをブラウザで開く。
+// microVM のためサンドボックスの IP へ直接は届かず、`sbx ports --publish` で
+// 明示的に公開して localhost 経由でアクセスする。
 var openCmd = &cobra.Command{
 	Use:   "open [port]",
-	Short: "Open the sandbox's server in the browser (defaults to port 8000)",
+	Short: "Publish the sandbox's port and open it in the browser (defaults to port 8000)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := container.EnsureRunning(); err != nil {
+		if err := sandbox.CheckCLI(); err != nil {
 			return err
 		}
 		port := 8000
@@ -259,20 +238,20 @@ var openCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		info, err := container.Get(name)
+		exists, err := sandbox.Has(name)
 		if err != nil {
 			return err
 		}
-		if info == nil {
+		if !exists {
 			return fmt.Errorf("no sandbox for this directory — start one with `agentsb run`")
 		}
-		if info.State != container.StateRunning {
-			return fmt.Errorf("sandbox %s is not running — start it with `agentsb run`", name)
+		// 公開済みのポートを再度 publish するとエラーになる可能性があるため、
+		// 失敗は警告に留めてブラウザは開く（初回公開なら成功する）。
+		if err := sandbox.PublishPort(name, port); err != nil {
+			runlog.Warn("publish port %d failed (may already be published): %v", port, err)
+			fmt.Fprintf(os.Stderr, "agentsb: warning: publish port %d: %v\n", port, err)
 		}
-		if info.IP == "" {
-			return fmt.Errorf("could not determine the IP of %s — check `container ls`", name)
-		}
-		url := fmt.Sprintf("http://%s:%d/", info.IP, port)
+		url := fmt.Sprintf("http://localhost:%d/", port)
 		fmt.Println(url)
 		if err := exec.Command("open", url).Run(); err != nil {
 			return fmt.Errorf("open %s: %w", url, err)
@@ -281,36 +260,31 @@ var openCmd = &cobra.Command{
 	},
 }
 
-// rmCmd は agentsb rm コマンド。サンドボックスのコンテナを削除する。
-// 認証情報は `~/.agentsb/home` に別途永続化されており、他のサンドボックスとも
-// 共有しているため、ここでは削除しない。名前を省略するとカレントディレクトリの
-// サンドボックスを対象にする。
+// rmCmd は agentsb rm コマンド。サンドボックスを削除する（稼働中でも
+// `sbx rm --force` で停止込みで消える）。認証情報は `~/.agentsb/home` に
+// 別途永続化されており、他のサンドボックスとも共有しているため、ここでは
+// 削除しない。名前を省略するとカレントディレクトリのサンドボックスを対象にする。
 var rmCmd = &cobra.Command{
 	Use:     "rm [name]",
 	Aliases: []string{"delete", "remove"},
 	Short:   "Remove a sandbox (defaults to the current directory's)",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := container.EnsureRunning(); err != nil {
+		if err := sandbox.CheckCLI(); err != nil {
 			return err
 		}
 		name, err := targetName(args)
 		if err != nil {
 			return err
 		}
-		info, err := container.Get(name)
+		exists, err := sandbox.Has(name)
 		if err != nil {
 			return err
 		}
-		if info == nil {
+		if !exists {
 			return fmt.Errorf("no sandbox named %s", name)
 		}
-		if info.State == container.StateRunning {
-			if err := container.Stop(name); err != nil {
-				return fmt.Errorf("stop %s: %w", name, err)
-			}
-		}
-		if err := container.Delete(name); err != nil {
+		if err := sandbox.Remove(name); err != nil {
 			return err
 		}
 		fmt.Printf("removed %s\n", name)

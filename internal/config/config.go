@@ -10,17 +10,10 @@ import (
 
 // Config は config.toml 全体の構造。
 type Config struct {
-	Container ContainerConfig `toml:"container"`
-	Dotfiles  DotfilesConfig  `toml:"dotfiles"`
+	Dotfiles DotfilesConfig `toml:"dotfiles"`
 }
 
-// ContainerConfig はコンテナのリソース設定。
-type ContainerConfig struct {
-	CPUs   int    `toml:"cpus"`
-	Memory string `toml:"memory"`
-}
-
-// DotfilesConfig はコンテナ起動時に適用する dotfiles の設定。
+// DotfilesConfig はサンドボックス作成時に適用する dotfiles の設定。
 type DotfilesConfig struct {
 	Repository     string `toml:"repository"`
 	TargetPath     string `toml:"target_path"`
@@ -60,9 +53,7 @@ func GlobalPath() (string, error) {
 
 // Load はデフォルト値の上に config.toml の内容を重ねて返す。ファイルが無くてもよい。
 func Load() (Config, error) {
-	cfg := Config{
-		Container: ContainerConfig{CPUs: 4, Memory: "4g"},
-	}
+	cfg := Config{}
 	path, err := GlobalPath()
 	if err != nil {
 		return cfg, err

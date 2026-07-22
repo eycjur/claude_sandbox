@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"agentsb/internal/config"
-	"agentsb/internal/container"
+	"agentsb/internal/sandbox"
 )
 
 // credentialSpec は同期対象ファイル 1 つ分の設定。
@@ -46,19 +46,17 @@ type CredentialFile struct {
 // 書き戻す。claude/codex どちらを使うかはコンテナ内でユーザーが手動起動
 // するまで agentsb 側からは分からないため、両方を常に同期対象にする
 // （ホスト側に存在しないファイルは InjectCredentials 側でスキップされる）。
-// .codex/config.toml は同期対象に含めない: `container cp` での書き戻しが
-// apple/container 側の XPC 接続不良でハングし、セッション終了処理全体が
-// 固まる事象があったため（他ファイルは問題なく同期できていた）。
+// .codex/config.toml は同期対象に含めない
 var credentialSpecs = []credentialSpec{
 	{relPath: filepath.Join(".claude", ".credentials.json"), syncIfNewer: false},
 	{relPath: ".claude.json", syncIfNewer: true},
 	{relPath: filepath.Join(".codex", "auth.json"), syncIfNewer: false},
 }
 
-// EnsureCredentialFiles はコピー先ディレクトリの存在を保証し、コンテナとの
-// コピーに使う情報を返す。ホスト側ファイル自体は無ければ作らない — 存在しな
-// いなら InjectCredentials 側でコピーをスキップする（空ファイルで上書きしな
-// いため）。bind mount ではなく `container cp` を使うのは、コンテナ内の他の
+// EnsureCredentialFiles はコピー先ディレクトリの存在を保証し、サンドボックス
+// とのコピーに使う情報を返す。ホスト側ファイル自体は無ければ作らない — 存在
+// しないなら InjectCredentials 側でコピーをスキップする（空ファイルで上書き
+// しないため）。マウントではなく `sbx cp` を使うのは、サンドボックス内の他の
 // 状態（イメージに焼き込んだものなど）をマウントで隠さないため。
 func EnsureCredentialFiles() ([]CredentialFile, error) {
 	base, err := basePath()
@@ -73,24 +71,23 @@ func EnsureCredentialFiles() ([]CredentialFile, error) {
 		}
 		files[i] = CredentialFile{
 			HostPath:      p,
-			ContainerPath: filepath.Join(container.HomeDir, spec.relPath),
+			ContainerPath: filepath.Join(sandbox.HomeDir, spec.relPath),
 			SyncIfNewer:   spec.syncIfNewer,
 		}
 	}
 	return files, nil
 }
 
-// InjectCredentials はコンテナ起動直後に認証情報ファイルをコンテナへコピーする。
+// InjectCredentials はサンドボックス作成直後に認証情報ファイルをコピーする。
 // ホスト側にファイルが無ければ（未オンボーディングなど）そのファイルはスキッ
-// プする — 空ファイルでコンテナ側の状態を上書きしないため。`container cp` は
-// 稼働中のコンテナにしか使えないため、呼び出し側は `container start` の後に
-// これを呼ぶこと。コピー自体はコンテナ側の root が書き込むため、agent が読める
-// よう uid/gid を chown で戻す。
-// SyncIfNewer なファイルは、コピー直後にコンテナ側の mtime をホスト側の値に
-// 揃える。`container cp` はコピー時刻を mtime にするため、揃えておかないと
-// セッション中に中身が変わっていなくても ExtractCredentials が「コンテナ側
-// の方が新しい」と誤判定してしまう。
-func InjectCredentials(runName string, files []CredentialFile, uid, gid int) error {
+// プする — 空ファイルでサンドボックス側の状態を上書きしないため。コピー結果の
+// 所有者は `sbx cp` の実装に依存するため、agent が確実に読み書きできるよう
+// chown で agent に揃える。
+// SyncIfNewer なファイルは、コピー直後にサンドボックス側の mtime をホスト側の
+// 値に揃える。cp はコピー時刻を mtime にするため、揃えておかないとセッション中
+// に中身が変わっていなくても ExtractCredentials が「サンドボックス側の方が
+// 新しい」と誤判定してしまう。
+func InjectCredentials(runName string, files []CredentialFile) error {
 	for _, f := range files {
 		hostInfo, err := os.Stat(f.HostPath)
 		if os.IsNotExist(err) {
@@ -98,14 +95,14 @@ func InjectCredentials(runName string, files []CredentialFile, uid, gid int) err
 		} else if err != nil {
 			return fmt.Errorf("cannot stat %s: %w", f.HostPath, err)
 		}
-		if err := container.CopyToContainer(runName, f.HostPath, f.ContainerPath); err != nil {
+		if err := sandbox.CopyToSandbox(runName, f.HostPath, f.ContainerPath); err != nil {
 			return fmt.Errorf("cannot inject %s: %w", f.ContainerPath, err)
 		}
-		if err := container.Chown(runName, f.ContainerPath, uid, gid); err != nil {
+		if err := sandbox.ChownAgent(runName, f.ContainerPath); err != nil {
 			return fmt.Errorf("cannot fix ownership of %s: %w", f.ContainerPath, err)
 		}
 		if f.SyncIfNewer {
-			if err := container.SetModTime(runName, f.ContainerPath, hostInfo.ModTime()); err != nil {
+			if err := sandbox.SetModTime(runName, f.ContainerPath, hostInfo.ModTime()); err != nil {
 				return fmt.Errorf("cannot align mtime of %s: %w", f.ContainerPath, err)
 			}
 		}
@@ -130,7 +127,7 @@ func ExtractCredentials(runName string, files []CredentialFile) error {
 }
 
 func extractOne(runName string, f CredentialFile) error {
-	exists, err := container.Exists(runName, f.ContainerPath)
+	exists, err := sandbox.PathExists(runName, f.ContainerPath)
 	if err != nil {
 		return fmt.Errorf("cannot check %s: %w", f.ContainerPath, err)
 	}
@@ -156,7 +153,7 @@ func extractOne(runName string, f CredentialFile) error {
 	tmpFile.Close()
 	defer os.Remove(tmp)
 
-	if err := container.CopyFromContainer(runName, f.ContainerPath, tmp); err != nil {
+	if err := sandbox.CopyFromSandbox(runName, f.ContainerPath, tmp); err != nil {
 		return fmt.Errorf("cannot extract %s: %w", f.ContainerPath, err)
 	}
 	if err := os.Chmod(tmp, 0600); err != nil {
@@ -176,7 +173,7 @@ func containerFileIsNewer(runName string, f CredentialFile) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("cannot stat %s: %w", f.HostPath, err)
 	}
-	containerMtime, err := container.ModTime(runName, f.ContainerPath)
+	containerMtime, err := sandbox.ModTime(runName, f.ContainerPath)
 	if err != nil {
 		return false, fmt.Errorf("cannot stat container %s: %w", f.ContainerPath, err)
 	}

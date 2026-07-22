@@ -8,33 +8,28 @@ import (
 	"syscall"
 
 	"agentsb/internal/config"
-	"agentsb/internal/container"
 	"agentsb/internal/dotfiles"
 	"agentsb/internal/herdr"
 	"agentsb/internal/home"
 	"agentsb/internal/image"
 	"agentsb/internal/runlog"
+	"agentsb/internal/sandbox"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
 // runRun はサンドボックスの状態を問わず「入れる状態」まで進めてセッションを開く:
-// イメージが無ければビルド、コンテナが無ければ作成、停止中なら起動、
-// 起動済みなら exec するだけ。セッション終了後に認証情報をベース home へ同期する。
+// テンプレートが無ければビルド、サンドボックスが無ければ作成して、exec で入る。
+// 停止中のサンドボックスの再開は sbx に任せる。セッション終了後に認証情報を
+// ベース home へ同期する。
 func runRun(_ *cobra.Command, _ []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	if runCPUs > 0 {
-		cfg.Container.CPUs = runCPUs
-	}
-	if runMemory != "" {
-		cfg.Container.Memory = runMemory
-	}
 	logConfig(cfg)
-	if err := container.EnsureRunning(); err != nil {
+	if err := sandbox.CheckCLI(); err != nil {
 		return err
 	}
 
@@ -58,77 +53,45 @@ func runRun(_ *cobra.Command, _ []string) error {
 		herdrEnv.Announce()
 	}
 
-	uid, gid := container.HostIDs()
-	runName := container.RunName(cwd)
-	runlog.Info("run cwd=%s name=%s uid=%d gid=%d", cwd, runName, uid, gid)
+	runName := sandbox.RunName(cwd)
+	runlog.Info("run cwd=%s name=%s", cwd, runName)
 
-	info, err := container.Get(runName)
+	exists, err := sandbox.Has(runName)
 	if err != nil {
 		return err
 	}
-	if info == nil {
-		runlog.Info("sandbox %s does not exist yet", runName)
-	} else {
-		runlog.Info("sandbox %s state=%s image=%s ip=%s", info.Name, info.State, info.Image, info.IP)
-	}
+	runlog.Info("sandbox %s exists=%v", runName, exists)
 
-	// 既存のサンドボックスがあれば、イメージ定義が変わっていてもそのまま使い続ける
-	// （作り直すと apt install などコンテナ層への変更が消えるため）。
+	// 既存のサンドボックスがあれば、テンプレート定義が変わっていてもそのまま
+	// 使い続ける（作り直すと apt install などサンドボックス内の変更が消えるため）。
 
-	// 認証情報ファイルをコンテナとやり取りする（詳細は internal/home のコメント）。
+	// 認証情報ファイルをサンドボックスとやり取りする（詳細は internal/home のコメント）。
 	credFiles, err := home.EnsureCredentialFiles()
 	if err != nil {
 		return fmt.Errorf("cannot prepare credential files: %w", err)
 	}
 
-	created := info == nil
-	if info == nil {
-		imageTag, err := image.EnsureBuilt(uid, gid, false)
+	created := !exists
+	if created {
+		templateTag, err := image.EnsureBuilt(false)
 		if err != nil {
 			return err
 		}
-		spec := container.CreateSpec{
-			Name:  runName,
-			Image: imageTag,
-			Mounts: []container.Mount{
-				{Host: cwd, Dest: container.Workdir},
-			},
-			CPUs:   cfg.Container.CPUs,
-			Memory: cfg.Container.Memory,
-			UID:    uid,
-			GID:    gid,
-		}
-		if err := container.Create(spec); err != nil {
+		if err := sandbox.Create(runName, templateTag, cwd); err != nil {
 			return err
 		}
-		info = &container.ContainerInfo{Name: runName}
-	} else if runCPUs > 0 || runMemory != "" {
-		fmt.Fprintln(os.Stderr, "agentsb: warning: --cpus/--memory apply only when the sandbox is created — `agentsb rm` first to apply them")
-	}
-
-	justStarted := info.State != container.StateRunning
-	if justStarted {
-		runlog.Info("starting sandbox %s", runName)
-		if err := container.Start(runName); err != nil {
-			return err
-		}
-	}
-
-	// `container cp` は稼働中のコンテナにしか使えないため、Start の後に注入する
-	// （詳細は internal/home のコメント）。
-	if created {
-		if err := home.InjectCredentials(runName, credFiles, uid, gid); err != nil {
+		if err := home.InjectCredentials(runName, credFiles); err != nil {
 			return fmt.Errorf("cannot inject credentials: %w", err)
 		}
 	}
 
 	// セッションはログインシェル固定。エージェントはシェル内から手動で起動する。
-	// [dotfiles] が設定されていれば、サンドボックスの起動時（新規作成・再開時）
-	// のみ clone/インストールを済ませてからシェルへ exec する起動スクリプトで
-	// 包む（詳細は internal/dotfiles）。既に動いているサンドボックスへ追加の
-	// 端末で入るだけの場合は、毎回のclone/pullが冗長なためスキップする。
+	// [dotfiles] が設定されていれば、サンドボックスの新規作成時のみ clone/
+	// インストールを済ませてからシェルへ exec する起動スクリプトで包む（詳細は
+	// internal/dotfiles）。既存サンドボックスへ入るだけの場合は、毎回の
+	// clone/pull が冗長なためスキップする
 	command := []string{"zsh", "-l"}
-	if justStarted && cfg.Dotfiles.Repository != "" {
+	if created && cfg.Dotfiles.Repository != "" {
 		command = dotfiles.Command(
 			cfg.Dotfiles.Repository,
 			cfg.Dotfiles.TargetPath,
@@ -137,16 +100,16 @@ func runRun(_ *cobra.Command, _ []string) error {
 		)
 		runlog.Info("session will bootstrap dotfiles then exec %v", []string{"zsh", "-l"})
 	} else if cfg.Dotfiles.Repository != "" {
-		runlog.Info("session command: %v (dotfiles bootstrap skipped: sandbox already running)", command)
+		runlog.Info("session command: %v (dotfiles bootstrap skipped: sandbox already exists)", command)
 	} else {
 		runlog.Info("session command: %v (dotfiles disabled)", command)
 	}
 
 	runlog.Info("exec session herdrAgent=%q command=%v", herdrAgent, command)
-	code, err := execSession(runName, herdrAgent, command)
+	code, err := execSession(runName, cwd, herdrAgent, command)
 	runlog.Info("session finished exit=%d err=%v", code, err)
 
-	// セッションの終わり方によらず、認証情報の同期は必ず行う。コンテナは
+	// セッションの終わり方によらず、認証情報の同期は必ず行う。サンドボックスは
 	// `rm` まで維持される。完了の herdr への報告は不要: exec プロセスの終了後、
 	// herdr が自前で検出する。
 	if syncErr := home.ExtractCredentials(runName, credFiles); syncErr != nil {
@@ -171,7 +134,6 @@ func logConfig(cfg config.Config) {
 	} else {
 		runlog.Info("config file loaded path=%s", path)
 	}
-	runlog.Info("config container cpus=%d memory=%s", cfg.Container.CPUs, cfg.Container.Memory)
 	if cfg.Dotfiles.Repository == "" {
 		runlog.Info("config dotfiles=disabled (set [dotfiles].repository in %s)", path)
 		return
@@ -184,22 +146,21 @@ func logConfig(cfg config.Config) {
 		cfg.Dotfiles.Repository, target, cfg.Dotfiles.InstallCommand)
 }
 
-// execSession は稼働中のサンドボックスで `container exec` を前面実行し、
-// セッションの終了コードを返す。
-// herdrAgent が空でなければ、この `container exec` プロセス自身（ホスト側）の
+// execSession はサンドボックスで `sbx exec` を前面実行し、セッションの終了
+// コードを返す。
+// herdrAgent が空でなければ、この `sbx exec` プロセス自身（ホスト側）の
 // argv[0] をその名前に書き換える: herdr はホストのプロセスツリーからエージェ
-// ントを識別し、その識別を前提に画面内容から状態を検出するため、コンテナ内の
-// エージェント名をホスト側プロセスの argv[0] に映しておく。
-// tty 接続時は `container exec` を新しいプロセスグループにして端末の
-// フォアグラウンドグループへ昇格させる（Setpgid+Foreground）。herdr は
-// フォアグラウンドの pgid が変化したことを再検出のトリガーにしており、
-// agentsb と同じ pgid のまま子として起動すると（コンテナの起動待ちの後に
-// この子プロセスが現れても）pgid が変化せず、argv[0] のヒントを持つ
-// プロセスの出現に herdr が気づけない。
-func execSession(name, herdrAgent string, command []string) (int, error) {
+// ントを識別し、その識別を前提に画面内容から状態を検出するため、サンドボックス
+// 内のエージェント名をホスト側プロセスの argv[0] に映しておく。
+// tty 接続時は `sbx exec` を新しいプロセスグループにして端末のフォアグラウンド
+// グループへ昇格させる（Setpgid+Foreground）。herdr はフォアグラウンドの pgid
+// が変化したことを再検出のトリガーにしており、agentsb と同じ pgid のまま子と
+// して起動すると（サンドボックスの起動待ちの後にこの子プロセスが現れても）
+// pgid が変化せず、argv[0] のヒントを持つプロセスの出現に herdr が気づけない。
+func execSession(name, workdir, herdrAgent string, command []string) (int, error) {
 	tty := term.IsTerminal(int(os.Stdin.Fd()))
-	args := container.ExecArgs(name, tty, command)
-	cmd := exec.Command("container", args...)
+	args := sandbox.ExecArgs(name, workdir, tty, command)
+	cmd := exec.Command("sbx", args...)
 	if herdrAgent != "" {
 		cmd.Args[0] = herdrAgent
 	}
