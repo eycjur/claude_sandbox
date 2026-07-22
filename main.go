@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -253,8 +254,11 @@ var openCmd = &cobra.Command{
 		}
 		url := fmt.Sprintf("http://localhost:%d/", port)
 		fmt.Println(url)
-		if err := exec.Command("open", url).Run(); err != nil {
-			return fmt.Errorf("open %s: %w", url, err)
+		// ブラウザ起動は macOS の open のみ。他 OS は URL 表示だけでよい。
+		if runtime.GOOS == "darwin" {
+			if err := exec.Command("open", url).Run(); err != nil {
+				return fmt.Errorf("open %s: %w", url, err)
+			}
 		}
 		return nil
 	},
