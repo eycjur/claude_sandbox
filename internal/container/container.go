@@ -3,7 +3,6 @@ package container
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -149,11 +148,9 @@ func HostIDs() (int, int) {
 
 // RunName はカレントディレクトリのパスから決定的なコンテナ名を生成する。
 // 同じディレクトリでは常に同じ名前になるため、同時に起動できる run は
-// ディレクトリごとに 1 つ。ディレクトリ名が同じでもパスが異なれば衝突しないよう、
-// フルパスの短いハッシュを付ける。
+// ディレクトリごとに 1 つ。
 func RunName(cwd string) string {
-	sum := sha256.Sum256([]byte(cwd))
-	return fmt.Sprintf("agentsb-%s-%x", pathKey(cwd), sum[:3])
+	return fmt.Sprintf("agentsb-%s", pathKey(cwd))
 }
 
 // pathKey はディレクトリ名をコンテナ名に使える文字（英小文字・数字・ハイフン）

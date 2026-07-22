@@ -120,17 +120,22 @@ var lsCmd = &cobra.Command{
 			return nil
 		}
 		for _, c := range containers {
-			fmt.Printf("%-40s  %s\n", c.Name, c.State)
+			short := strings.TrimPrefix(c.Name, "agentsb-")
+			fmt.Printf("%-20s  %-40s  %s\n", short, c.Name, c.State)
 		}
 		return nil
 	},
 }
 
 // targetName は引数で指定された名前を返し、省略時はカレントディレクトリの
-// サンドボックス名を返す。
+// サンドボックス名を返す。`agentsb-` プレフィックスは省略できる。
 func targetName(args []string) (string, error) {
 	if len(args) == 1 {
-		return args[0], nil
+		name := args[0]
+		if !strings.HasPrefix(name, "agentsb-") {
+			name = "agentsb-" + name
+		}
+		return name, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
