@@ -11,6 +11,7 @@ import (
 // Config は config.toml 全体の構造。
 type Config struct {
 	Dotfiles DotfilesConfig `toml:"dotfiles"`
+	Secrets  SecretsConfig  `toml:"secrets"`
 }
 
 // DotfilesConfig はサンドボックス作成時に適用する dotfiles の設定。
@@ -18,6 +19,14 @@ type DotfilesConfig struct {
 	Repository     string `toml:"repository"`
 	TargetPath     string `toml:"target_path"`
 	InstallCommand string `toml:"install_command"`
+}
+
+// SecretsConfig はプロキシ注入用シークレットの取得元。
+// source が空のときは ~/.config/agentsb/secrets.toml。
+// 指定する場合は "1password" のみ（ref は op://Vault/Item/notesPlain）。
+type SecretsConfig struct {
+	Source string `toml:"source"`
+	Ref    string `toml:"ref"`
 }
 
 // Root はデータディレクトリ ~/.agentsb を返す（home / build / logs など）。

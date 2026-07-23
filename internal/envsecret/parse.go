@@ -1,10 +1,12 @@
-// Package envsecret は ~/.config/agentsb/secrets.toml を sbx global へプロキシ注入する。
+// Package envsecret は secrets.toml を sbx global へプロキシ注入する。
 // 組み込みは secret set -g、それ以外は set-custom -g。内容が同じなら set をスキップする。
+// 取得元は config.toml の [secrets]（file または 1Password Secure Note）。
 package envsecret
 
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -50,39 +52,90 @@ func Path() (string, error) {
 	return filepath.Join(dir, fileName), nil
 }
 
-// Load は secrets.toml を読む。無ければ (nil, nil)。
-func Load() ([]Secret, error) {
+// loadSource は設定に従いシークレット本文と表示用ラベルを返す。
+// 無ければ (nil, "", nil)。
+func loadSource() (secrets []Secret, label string, raw []byte, err error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, "", nil, err
+	}
+	src := strings.ToLower(strings.TrimSpace(cfg.Secrets.Source))
+	if src == "" {
+		return loadFile()
+	}
+	if src != "1password" {
+		return nil, "", nil, fmt.Errorf("config [secrets]: source must be \"1password\" (got %q)", cfg.Secrets.Source)
+	}
+	ref := strings.TrimSpace(cfg.Secrets.Ref)
+	if ref == "" {
+		return nil, "", nil, fmt.Errorf("config [secrets]: source=%q requires ref (e.g. op://Vault/Item/notesPlain)", cfg.Secrets.Source)
+	}
+	raw, err = readOnePassword(ref)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	secrets, err = parseSecrets(raw, ref)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return secrets, ref, raw, nil
+}
+
+func loadFile() ([]Secret, string, []byte, error) {
 	path, err := Path()
 	if err != nil {
-		return nil, err
+		return nil, "", nil, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, path, nil, nil
 		}
-		return nil, err
+		return nil, "", nil, err
 	}
+	secrets, err := parseSecrets(data, path)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return secrets, path, data, nil
+}
+
+func readOnePassword(ref string) ([]byte, error) {
+	if _, err := exec.LookPath("op"); err != nil {
+		return nil, fmt.Errorf("1Password CLI (op) not found in PATH")
+	}
+	cmd := exec.Command("op", "read", ref)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("op read %s: %w: %s", ref, err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("op read %s: %w", ref, err)
+	}
+	return out, nil
+}
+
+func parseSecrets(data []byte, label string) ([]Secret, error) {
 	var f file
 	if err := toml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("invalid %s: %w", path, err)
+		return nil, fmt.Errorf("invalid secrets from %s: %w", label, err)
 	}
 	for i := range f.Secret {
 		s := &f.Secret[i]
 		if s.Name == "" {
-			return nil, fmt.Errorf("%s: secret[%d]: name is required", path, i)
+			return nil, fmt.Errorf("%s: secret[%d]: name is required", label, i)
 		}
 		if s.Value == "" {
-			return nil, fmt.Errorf("%s: secret[%d] (%s): value is required", path, i, s.Name)
+			return nil, fmt.Errorf("%s: secret[%d] (%s): value is required", label, i, s.Name)
 		}
 		_, builtin := builtinByEnv[s.Name]
 		if !builtin && len(s.Domains) == 0 {
-			return nil, fmt.Errorf("%s: secret[%d] (%s): domains is required", path, i, s.Name)
+			return nil, fmt.Errorf("%s: secret[%d] (%s): domains is required", label, i, s.Name)
 		}
 		for j, d := range s.Domains {
 			d = strings.TrimSpace(d)
 			if d == "" {
-				return nil, fmt.Errorf("%s: secret[%d] (%s): empty domain", path, i, s.Name)
+				return nil, fmt.Errorf("%s: secret[%d] (%s): empty domain", label, i, s.Name)
 			}
 			s.Domains[j] = d
 		}

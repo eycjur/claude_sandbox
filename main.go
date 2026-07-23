@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"agentsb/internal/config"
+	"agentsb/internal/envsecret"
 	"agentsb/internal/image"
 	"agentsb/internal/runlog"
 	"agentsb/internal/sandbox"
@@ -28,7 +29,8 @@ func main() {
 func execute() int {
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "mirror diagnostic logs to stderr")
 	pruneCmd.Flags().BoolVarP(&pruneYes, "yes", "y", false, "skip confirmation prompt")
-	rootCmd.AddCommand(runCmd, buildCmd, lsCmd, stopCmd, rmCmd, pruneCmd, openCmd)
+	secretsCmd.AddCommand(secretsClearCmd)
+	rootCmd.AddCommand(runCmd, buildCmd, lsCmd, stopCmd, rmCmd, pruneCmd, openCmd, secretsCmd)
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
 		runlog.SetVerbose(verboseFlag)
 		runlog.Open()
@@ -190,6 +192,25 @@ var stopCmd = &cobra.Command{
 // pruneYes は prune の -y/--yes。確認プロンプトをスキップする。
 var pruneYes bool
 
+// secretsCmd は agentsb secrets サブコマンド群。
+var secretsCmd = &cobra.Command{
+	Use:   "secrets",
+	Short: "Manage sbx proxy-injected secrets",
+}
+
+// secretsClearCmd は sbx に登録済みのシークレットをすべて削除する。
+var secretsClearCmd = &cobra.Command{
+	Use:   "clear",
+	Short: "Remove all sbx secrets (global and sandbox-scoped)",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := sandbox.CheckCLI(); err != nil {
+			return err
+		}
+		return envsecret.Clear()
+	},
+}
+
 // pruneCmd は agentsb prune コマンド。agentsb が管理する全サンドボックス・
 // 全テンプレート・認証情報・ビルド作業ディレクトリを削除するフルリセット。
 // 認証情報が消えるため次回 run では各サンドボックスで再ログインが必要になる。
@@ -217,6 +238,9 @@ var pruneCmd = &cobra.Command{
 			}
 		}
 		if err := image.DeleteAll(); err != nil {
+			errs = append(errs, err.Error())
+		}
+		if err := envsecret.Clear(); err != nil {
 			errs = append(errs, err.Error())
 		}
 		root, err := config.Root()
